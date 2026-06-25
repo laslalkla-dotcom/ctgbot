@@ -1,0 +1,49 @@
+{
+  "shop_products": {},
+  "shop_users": {
+    "5848104510": {
+      "name": "ᴀɴɪsɪᴍᴏᴠ || ⟮340+ rep⟯ ЧЕК БИО!",
+      "username": "AnisimovWork",
+      "join_time": "2026-06-25 20:21"
+    },
+    "8563966849": {
+      "name": "Аня",
+      "username": "Wort3x1",
+      "join_time": "2026-06-25 20:33"
+    },
+    "7890770284": {
+      "name": "Писать: @AnisimovWork",
+      "username": "Lintyry",
+      "join_time": "2026-06-25 21:21"
+    },
+    "7545763923": {
+      "name": "Чо это",
+      "username": "Tolik_top",
+      "join_time": "2026-06-25 21:25"
+    }
+  },
+  "shop_orders": [],
+  "shop_reviews": [],
+  "purchase_logs": [],
+  "promo_usage": {},
+  "verified_users": {
+    "5848104510": 1782401618.133914,
+    "8563966849": 1782401650.6864893,
+    "7545763923": 1782405027.538293
+  },
+  "user_lang": {
+    "5848104510": "ru",
+    "8563966849": "ru",
+    "7545763923": "ru"
+  },
+  "game_categories": {
+    "1": "CS2",
+    "2": "Minecraft",
+    "3": "Telegram",
+    "4": "Discord",
+    "5": "Valorant",
+    "6": "GTA 5",
+    "7": "Roblox",
+    "8": "Other"
+  }
+}

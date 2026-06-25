@@ -1,9 +1,12 @@
 import asyncio
 import random
 import time
+import json
+import os
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
-                            InlineKeyboardButton, ChatPermissions, FSInputFile)
+                            InlineKeyboardButton, ChatPermissions, FSInputFile,
+                            ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove)
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
@@ -15,6 +18,46 @@ from datetime import timedelta
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+DB_FILE = "db.json"
+
+def save_db():
+    data = {
+        "shop_products": shop_products,
+        "shop_users": {str(k): v for k, v in shop_users.items()},
+        "shop_orders": shop_orders,
+        "shop_reviews": shop_reviews,
+        "purchase_logs": purchase_logs,
+        "promo_usage": {k: [str(i) for i in v] for k, v in promo_usage.items()},
+        "verified_users": {str(k): v for k, v in verified_users.items()},
+        "user_lang": {str(k): v for k, v in user_lang.items()},
+        "game_categories": GAME_CATEGORIES,
+    }
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_db():
+    global shop_products, shop_users, shop_orders, shop_reviews
+    global purchase_logs, promo_usage, verified_users, user_lang
+    if not os.path.exists(DB_FILE):
+        return
+    try:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        shop_products = data.get("shop_products", {})
+        shop_users = {int(k): v for k, v in data.get("shop_users", {}).items()}
+        shop_orders = data.get("shop_orders", [])
+        shop_reviews = data.get("shop_reviews", [])
+        purchase_logs = data.get("purchase_logs", [])
+        promo_usage = {k: [int(i) for i in v] for k, v in data.get("promo_usage", {}).items()}
+        verified_users = {int(k): v for k, v in data.get("verified_users", {}).items()}
+        user_lang = {int(k): v for k, v in data.get("user_lang", {}).items()}
+        if "game_categories" in data:
+            GAME_CATEGORIES.clear()
+            GAME_CATEGORIES.update(data["game_categories"])
+        print("✅ База данных загружена.")
+    except Exception as e:
+        print(f"⚠️ Ошибка загрузки БД: {e}")
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
 
 bot = Bot(token=BOT_TOKEN)
@@ -38,6 +81,7 @@ class UserStates(StatesGroup):
     waiting_promo = State()
     waiting_topup = State()
     waiting_stars_amount = State()
+    waiting_crypto_hash = State()
 
 # Промокоды: код -> скидка/сообщение
 PROMOCODES = {
@@ -144,6 +188,35 @@ def build_lang_keyboard() -> InlineKeyboardMarkup:
         ]
     ])
 
+def build_reply_menu(user_id: int) -> ReplyKeyboardMarkup:
+    lang = get_lang(user_id)
+    catalog_btn = "🏷️ Тарифы" if lang == "ru" else "🏷️ Tariffs"
+    sub_btn = "📢 Подписка" if lang == "ru" else "📢 Subscribe"
+    rows = [[KeyboardButton(text=catalog_btn), KeyboardButton(text=sub_btn)]]
+    if user_id in ADMIN_IDS:
+        rows.append([KeyboardButton(text="⚙️ Админ панель")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+    correct = random.choice(EMOJIS)
+    options = [correct] + random.sample([e for e in EMOJIS if e != correct], 5)
+    random.shuffle(options)
+    return correct, options
+
+def build_keyboard(options, user_id):
+    buttons = []
+    row = []
+    for i, emoji in enumerate(options):
+        row.append(InlineKeyboardButton(
+            text=emoji, callback_data=f"verify:{user_id}:{emoji}"
+        ))
+        if len(row) == 3:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 def generate_captcha():
     correct = random.choice(EMOJIS)
     options = [correct] + random.sample([e for e in EMOJIS if e != correct], 5)
@@ -184,6 +257,7 @@ def build_subscribe_keyboard(user_id: int) -> InlineKeyboardMarkup:
 async def send_main_menu(target, user_id: int, with_photo: bool = False):
     """Отправляет главное меню. target — Message или CallbackQuery."""
     t = TEXTS[get_lang(user_id)]
+    reply_kb = build_reply_menu(user_id)
     if isinstance(target, CallbackQuery):
         if with_photo:
             try:
@@ -197,6 +271,7 @@ async def send_main_menu(target, user_id: int, with_photo: bool = False):
                 reply_markup=build_main_menu(user_id),
                 parse_mode="HTML"
             )
+            await target.message.answer("👇", reply_markup=reply_kb)
         else:
             try:
                 await target.message.edit_text(t["welcome"], reply_markup=build_main_menu(user_id), parse_mode="HTML")
@@ -211,6 +286,7 @@ async def send_main_menu(target, user_id: int, with_photo: bool = False):
                 reply_markup=build_main_menu(user_id),
                 parse_mode="HTML"
             )
+            await target.answer("👇", reply_markup=reply_kb)
         else:
             await target.answer(t["welcome"], reply_markup=build_main_menu(user_id), parse_mode="HTML")
 
@@ -295,6 +371,7 @@ async def on_verify(callback: CallbackQuery):
                     "username": callback.from_user.username or "—",
                     "join_time": time.strftime("%Y-%m-%d %H:%M")
                 }
+            save_db()
             await callback.message.edit_text(
                 "🌐 Выберите язык / Choose language:",
                 reply_markup=build_lang_keyboard(),
@@ -359,6 +436,7 @@ async def on_check_sub(callback: CallbackQuery):
             "username": callback.from_user.username or "—",
             "join_time": time.strftime("%Y-%m-%d %H:%M")
         }
+        save_db()
         await callback.message.edit_text(
             "🌐 Выберите язык / Choose language:",
             reply_markup=build_lang_keyboard(),
@@ -439,6 +517,27 @@ async def on_cancel_stars(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("❌ Отменено.")
     await callback.answer()
 
+@dp.message(UserStates.waiting_topup)
+async def on_topup_input(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    lang = get_lang(user_id)
+    await state.clear()
+    if not message.text or not message.text.isdigit() or int(message.text) < 1:
+        text = "❌ Введите корректную сумму." if lang == "ru" else "❌ Enter a valid amount."
+        await message.answer(text)
+        return
+    amount = message.text
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🦋 CryptoBot", callback_data=f"pay:crypto:{amount}")],
+        [InlineKeyboardButton(text="🔀 СБП / Крипта", callback_data=f"pay:sbp:{amount}")],
+        [InlineKeyboardButton(text="⭐ Звёзды", callback_data=f"pay:stars:{amount}")],
+    ])
+    await message.answer(
+        f"💰 <b>{amount}.0 ₽</b>\n\nВыберите способ:",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
 @dp.message(UserStates.waiting_stars_amount)
 async def on_stars_amount(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -481,7 +580,96 @@ async def on_stars_amount(message: Message, state: FSMContext):
             pass
     log_action(message.from_user, f"запросил покупку {amount} звёзд")
 
-@dp.message(UserStates.waiting_topup)
+@dp.callback_query(F.data.startswith("crypto_paid:"))
+async def on_crypto_paid(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    amount = parts[1]
+    uid = parts[2]
+    await state.set_state(UserStates.waiting_crypto_hash)
+    await state.update_data(crypto_amount=amount)
+    await callback.message.edit_text(
+        f"✅ Отлично! Теперь отправь хэш транзакции (TX Hash):\n\n"
+        f"Его можно найти в кошельке после отправки.",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(UserStates.waiting_crypto_hash)
+async def on_crypto_hash(message: Message, state: FSMContext):
+    data = await state.get_data()
+    amount = data.get("crypto_amount", "?")
+    await state.clear()
+    tx_hash = message.text.strip()
+    # Уведомляем админов с кнопками подтверждения
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_pay:approve:{message.from_user.id}:{amount}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"confirm_pay:reject:{message.from_user.id}:{amount}"),
+        ]
+    ])
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin_id,
+                f"🦋 <b>Заявка на пополнение TON!</b>\n\n"
+                f"👤 {message.from_user.full_name} | <code>{message.from_user.id}</code>\n"
+                f"💰 Сумма: <b>{amount} ₽</b>\n"
+                f"🔗 TX Hash: <code>{tx_hash}</code>\n\n"
+                f"Подтвердите или отклоните:",
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    await message.answer(
+        f"✅ Заявка отправлена на проверку!\n\n"
+        f"🔗 TX: <code>{tx_hash}</code>\n\n"
+        f"Ожидайте подтверждения от администратора.\n\n"
+        f"❓ Если не понимаете — пишите сюда: @AnisimovWork",
+        parse_mode="HTML"
+    )
+    log_action(message.from_user, f"отправил TON оплату {amount}₽ TX:{tx_hash[:16]}...")
+
+@dp.callback_query(F.data.startswith("confirm_pay:"))
+async def on_confirm_pay(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🚫 Нет прав.", show_alert=True)
+        return
+    parts = callback.data.split(":")
+    action = parts[1]
+    user_id = int(parts[2])
+    amount = parts[3]
+
+    if action == "approve":
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ <b>Оплата подтверждена!</b>\n\n"
+                f"💰 Баланс пополнен на <b>{amount} ₽</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        await callback.message.edit_text(
+            callback.message.text + f"\n\n✅ <b>Подтверждено администратором {callback.from_user.full_name}</b>",
+            parse_mode="HTML"
+        )
+        await callback.answer("✅ Подтверждено!", show_alert=True)
+    else:
+        try:
+            await bot.send_message(
+                user_id,
+                f"❌ <b>Оплата отклонена.</b>\n\n"
+                f"Если это ошибка — обратитесь в поддержку: @AnisimovWork",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        await callback.message.edit_text(
+            callback.message.text + f"\n\n❌ <b>Отклонено администратором {callback.from_user.full_name}</b>",
+            parse_mode="HTML"
+        )
+        await callback.answer("❌ Отклонено.", show_alert=True)
 async def on_topup_input(message: Message, state: FSMContext):
     user_id = message.from_user.id
     lang = get_lang(user_id)
@@ -509,12 +697,20 @@ async def on_pay_method(callback: CallbackQuery, state: FSMContext):
     lang = get_lang(user_id)
 
     if method == "crypto":
-        text = (
-            f"🦋 <b>CryptoBot</b>\n\n"
+        ton_address = "UQBiw7YK0P9gOGXJ3oBRLwuye6OlStkVE5CcfoRMFr-KchOm"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"crypto_paid:{amount}:{user_id}")]
+        ])
+        await callback.message.edit_text(
+            f"🦋 <b>Оплата через TON</b>\n\n"
             f"💰 Сумма: <b>{amount} ₽</b>\n\n"
-            f"Отправьте оплату и напишите в поддержку:\n@AnisimovWork"
+            f"📤 Отправь TON на адрес:\n"
+            f"<code>{ton_address}</code>\n\n"
+            f"После оплаты нажми кнопку ниже и отправь хэш транзакции.",
+            reply_markup=kb,
+            parse_mode="HTML"
         )
-        await callback.message.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
+        await callback.answer()
     elif method == "sbp":
         text = (
             f"🔀 <b>СБП / Крипта</b>\n\n"
@@ -527,6 +723,7 @@ async def on_pay_method(callback: CallbackQuery, state: FSMContext):
         await state.set_state(UserStates.waiting_stars_amount)
         await state.update_data(topup_amount=amount)
         kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⭐ Пополнить через бота", url="https://t.me/AnisimovStartsNft_Bot")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_stars")]
         ])
         await callback.message.edit_text(
@@ -535,7 +732,8 @@ async def on_pay_method(callback: CallbackQuery, state: FSMContext):
             f"• Минимум: <b>50 звёзд</b>\n"
             f"• Максимум (за один заказ): <b>10 000 звёзд</b>\n\n"
             f"• Баланса хватает на покупку: ~0 звёзд (0₽)\n\n"
-            f"🔎 Введите количество звёзд для покупки:",
+            f"🔎 Введите количество звёзд для покупки:\n\n"
+            f"Или пополни напрямую через @AnisimovStartsNft_Bot 👆",
             reply_markup=kb,
             parse_mode="HTML"
         )
@@ -674,6 +872,7 @@ async def on_lang(callback: CallbackQuery):
     lang = callback.data.split(":")[1]
     user_id = callback.from_user.id
     user_lang[user_id] = lang
+    save_db()
     t = TEXTS[lang]
     await callback.answer(t["lang_set"], show_alert=False)
     await send_main_menu(callback, user_id, with_photo=True)
@@ -721,6 +920,8 @@ class AdminStates(StatesGroup):
     waiting_broadcast = State()
     waiting_review_reply = State()
     waiting_settings_value = State()
+    waiting_product_data = State()
+    waiting_new_category = State()
 
 def build_admin_panel() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -738,14 +939,118 @@ def build_admin_panel() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="📢 Рассылка", callback_data="adm:broadcast"),
-            InlineKeyboardButton(text="⚙️ Настройки", callback_data="adm:settings"),
+            InlineKeyboardButton(text="🎮 Категории", callback_data="adm:categories"),
         ],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="adm:settings")],
     ])
 
 def build_admin_back() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад", callback_data="adm:back")]
     ])
+
+async def show_admin_products(callback: CallbackQuery, page: int = 0):
+    PAGE_SIZE = 8
+    all_products = list(shop_products.items())
+    total = len(all_products)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+
+    # Текст со списком всех товаров
+    if not all_products:
+        lines = "Товаров нет."
+    else:
+        lines_list = []
+        for pid, v in all_products:
+            stock = v.get("stock", 0)
+            price = v.get("price", "0")
+            data_count = len(v.get("data", []))
+            icon = "✅" if stock > 0 else "❌"
+            lines_list.append(f"{icon} {v['name']}\n💰 {price}₽ | 📦 {data_count}")
+        lines = "\n\n".join(lines_list)
+
+    text = f"📦 <b>Товары ({total})</b>\n\n{lines}"
+
+    # Кнопки текущей страницы
+    page_items = all_products[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
+    buttons = []
+    for pid, v in page_items:
+        stock = v.get("stock", 0)
+        icon = "✅" if stock > 0 else "❌"
+        buttons.append([InlineKeyboardButton(
+            text=f"{icon} {v['name']}",
+            callback_data=f"product_manage:{pid}"
+        )])
+
+    # Пагинация
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm:products_page_{page-1}"))
+    nav.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="adm:products"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm:products_page_{page+1}"))
+    if nav:
+        buttons.append(nav)
+
+    buttons.append([
+        InlineKeyboardButton(text="➕ Добавить", callback_data="adm:add_product"),
+        InlineKeyboardButton(text="◀️ Меню", callback_data="adm:back"),
+    ])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(F.text == "⚙️ Админ панель")
+async def reply_admin(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    total_users = len(shop_users)
+    total_products = len(shop_products)
+    total_orders = len(shop_orders)
+    text = (
+        f"🔧 <b>Админ-панель: Anisimov Shop</b>\n\n"
+        f"🟢 Статус: активен\n"
+        f"📦 Товаров: <b>{total_products}</b>\n"
+        f"👥 Пользователей: <b>{total_users}</b>\n"
+        f"🛒 Заказов: <b>{total_orders}</b>\n\n"
+        f"Выберите раздел:"
+    )
+    await message.answer(text, reply_markup=build_admin_panel(), parse_mode="HTML")
+
+@dp.message(F.text.in_({"🏷️ Тарифы", "🏷️ Tariffs"}))
+async def reply_catalog(message: Message):
+    user_id = message.from_user.id
+    register_user(message.from_user)
+    t = TEXTS[get_lang(user_id)]
+    cats = {}
+    for pid, v in shop_products.items():
+        g = v.get("game", "Other")
+        cats.setdefault(g, 0)
+        cats[g] += 1
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if cats:
+        buttons = [[InlineKeyboardButton(text=f"🎮 {g}", callback_data=f"cat:catalog:{g}")] for g in cats]
+        buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:back")])
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        caption = "🛍 <b>Выберите категорию:</b>"
+    else:
+        caption = "🏷️ <b>Каталог</b>\n\nТоваров пока нет."
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:back")]])
+    photo = FSInputFile(CATALOG_IMAGE)
+    await message.answer_photo(photo=photo, caption=caption, reply_markup=kb, parse_mode="HTML")
+
+@dp.message(F.text.in_({"📢 Подписка", "📢 Subscribe"}))
+async def reply_subscription(message: Message):
+    user_id = message.from_user.id
+    lang = get_lang(user_id)
+    text = "📢 <b>Подписка</b>\n\nПодпишись на наш канал:" if lang == "ru" else "📢 <b>Subscribe</b>\n\nFollow our channel:"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 @Anisimovfunpay", url="https://t.me/Anisimovfunpay")]
+    ])
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 @dp.message(Command("admins"))
 async def cmd_admins(message: Message):
@@ -863,7 +1168,8 @@ async def on_buy_method(callback: CallbackQuery):
         )
         await callback.answer()
     else:
-        # Рубли — через поддержку
+        # Рубли — выдаём данные из базы
+        product_data = product.get("data", [])
         order = {
             "user_id": user_id,
             "name": callback.from_user.full_name,
@@ -874,12 +1180,26 @@ async def on_buy_method(callback: CallbackQuery):
         shop_orders.append(order)
         purchase_logs.append(order)
 
-        text = (
-            f"✅ <b>Заказ оформлен!</b>\n\n"
-            f"📦 {product['name']}\n"
-            f"💰 {product['price']} ₽\n\n"
-            f"📞 Напишите в поддержку: @AnisimovWork"
-        )
+        if product_data:
+            # Выдаём первую строку и удаляем её
+            item_data = product_data.pop(0)
+            shop_products[product_id]["stock"] = len(product_data)
+            save_db()
+            text = (
+                f"✅ <b>Заказ оформлен!</b>\n\n"
+                f"📦 {product['name']}\n"
+                f"💰 {product['price']} ₽\n\n"
+                f"🔑 <b>Ваши данные:</b>\n"
+                f"<code>{item_data}</code>"
+            )
+        else:
+            text = (
+                f"✅ <b>Заказ оформлен!</b>\n\n"
+                f"📦 {product['name']}\n"
+                f"💰 {product['price']} ₽\n\n"
+                f"⚠️ Данные закончились. Напишите в поддержку: @AnisimovWork"
+            )
+
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(
@@ -887,7 +1207,7 @@ async def on_buy_method(callback: CallbackQuery):
                     f"🛒 <b>Новый заказ!</b>\n\n"
                     f"👤 {callback.from_user.full_name} | <code>{user_id}</code>\n"
                     f"📦 {product['name']} — {product['price']}₽\n"
-                    f"💳 Оплата: рубли",
+                    f"📊 Осталось данных: {len(product.get('data', []))}",
                     parse_mode="HTML"
                 )
             except Exception:
@@ -966,6 +1286,126 @@ async def on_successful_payment(message: Message):
             parse_mode="HTML"
         )
 
+@dp.callback_query(F.data.startswith("product_manage:"))
+async def on_product_manage(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🚫 Нет прав.", show_alert=True)
+        return
+    pid = callback.data.split(":")[1]
+    product = shop_products.get(pid)
+    if not product:
+        await callback.answer("❌ Товар не найден.", show_alert=True)
+        return
+    data_count = len(product.get("data", []))
+    text = (
+        f"📦 <b>{product['name']}</b>\n"
+        f"🎮 {product.get('game','—')} | 💰 {product['price']}₽\n"
+        f"📊 Данных в базе: <b>{data_count} шт.</b>\n\n"
+        f"Отправь TXT файл или текст с данными\n"
+        f"(каждая строка = один аккаунт/ключ)"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Загрузить данные", callback_data=f"upload_data:{pid}")],
+        [InlineKeyboardButton(text="🗑 Удалить товар", callback_data=f"del_product:{pid}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm:products")],
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("upload_data:"))
+async def on_upload_data(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🚫 Нет прав.", show_alert=True)
+        return
+    pid = callback.data.split(":")[1]
+    await state.set_state(AdminStates.waiting_product_data)
+    await state.update_data(upload_pid=pid)
+    await callback.message.edit_text(
+        "📤 Отправь TXT файл или текст с данными.\n\n"
+        "Каждая строка = один товар (аккаунт/ключ/пароль):\n"
+        "<code>login1:pass1\nlogin2:pass2</code>\n\n"
+        "/cancel — отмена",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_product_data)
+async def on_product_data_upload(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    data = await state.get_data()
+    pid = data.get("upload_pid")
+    await state.clear()
+
+    if not pid or pid not in shop_products:
+        await message.answer("❌ Товар не найден.")
+        return
+
+    lines = []
+
+    if message.document:
+        # Получаем TXT файл
+        try:
+            file = await bot.get_file(message.document.file_id)
+            file_bytes = await bot.download_file(file.file_path)
+            content = file_bytes.read().decode("utf-8")
+            lines = [l.strip() for l in content.splitlines() if l.strip()]
+        except Exception as e:
+            await message.answer(f"❌ Ошибка чтения файла: {e}")
+            return
+    elif message.text:
+        lines = [l.strip() for l in message.text.splitlines() if l.strip()]
+
+    if not lines:
+        await message.answer("❌ Данные пустые.")
+        return
+
+    if "data" not in shop_products[pid]:
+        shop_products[pid]["data"] = []
+    shop_products[pid]["data"].extend(lines)
+    shop_products[pid]["stock"] = len(shop_products[pid]["data"])
+    save_db()
+    await message.answer(
+        f"✅ Добавлено <b>{len(lines)}</b> строк.\n"
+        f"📊 Всего в базе: <b>{len(shop_products[pid]['data'])}</b> шт.",
+        parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.startswith("del_cat:"))
+async def on_del_category(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("🚫 Нет прав.", show_alert=True)
+        return
+    num = callback.data.split(":")[1]
+    name = GAME_CATEGORIES.pop(num, None)
+    if name:
+        # Перенумеруем
+        items = list(GAME_CATEGORIES.values())
+        GAME_CATEGORIES.clear()
+        for i, item in enumerate(items, 1):
+            GAME_CATEGORIES[str(i)] = item
+        save_db()
+        await callback.answer(f"🗑 Удалена: {name}", show_alert=True)
+    # Обновляем список
+    cats_list = "\n".join([f"{num}. {name}" for num, name in GAME_CATEGORIES.items()]) if GAME_CATEGORIES else "Категорий нет."
+    text = f"🎮 <b>Категории ({len(GAME_CATEGORIES)})</b>\n\n{cats_list}"
+    buttons = [[InlineKeyboardButton(text=f"🗑 Удалить: {n}", callback_data=f"del_cat:{num}")] for num, n in GAME_CATEGORIES.items()]
+    buttons.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="adm:add_category")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:back")])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+@dp.message(AdminStates.waiting_new_category)
+async def on_new_category(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    await state.clear()
+    name = message.text.strip()
+    new_num = str(len(GAME_CATEGORIES) + 1)
+    GAME_CATEGORIES[new_num] = name
+    save_db()
+    await message.answer(f"✅ Категория <b>{name}</b> добавлена!", parse_mode="HTML")
+
 @dp.callback_query(F.data.startswith("del_product:"))
 async def on_del_product(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -974,6 +1414,7 @@ async def on_del_product(callback: CallbackQuery):
     pid = callback.data.split(":")[1]
     product = shop_products.pop(pid, None)
     if product:
+        save_db()
         await callback.answer(f"🗑 Удалён: {product['name']}", show_alert=True)
     else:
         await callback.answer("❌ Товар не найден.", show_alert=True)
@@ -1029,33 +1470,11 @@ async def on_admin_action(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(text, reply_markup=build_admin_panel(), parse_mode="HTML")
 
     elif action == "products":
-        if not shop_products:
-            text = "📦 <b>Товары</b>\n\nТоваров нет."
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="➕ Добавить товар", callback_data="adm:add_product")],
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="adm:back")],
-            ])
-        else:
-            cats = {}
-            for pid, v in shop_products.items():
-                g = v.get("game", "Other")
-                cats.setdefault(g, [])
-                cats[g].append((pid, v))
-            lines = []
-            for g, items in cats.items():
-                lines.append(f"🎮 <b>{g}</b>")
-                for pid, item in items:
-                    stock = item.get("stock", 0)
-                    stock_icon = "✅" if stock > 0 else "❌"
-                    lines.append(f"  {stock_icon} {item['name']} — {item['price']}₽ | Кол-во: {stock}")
-            text = f"📦 <b>Товары ({len(shop_products)})</b>\n\n" + "\n".join(lines)
-            buttons = []
-            for pid, v in shop_products.items():
-                buttons.append([InlineKeyboardButton(text=f"🗑 Удалить: {v['name']}", callback_data=f"del_product:{pid}")])
-            buttons.append([InlineKeyboardButton(text="➕ Добавить товар", callback_data="adm:add_product")])
-            buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:back")])
-            kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        await show_admin_products(callback, page=0)
+
+    elif action.startswith("products_page_"):
+        page = int(action.replace("products_page_", ""))
+        await show_admin_products(callback, page=page)
 
     elif action == "add_product":
         await state.set_state(AdminStates.waiting_product_name)
@@ -1125,6 +1544,22 @@ async def on_admin_action(callback: CallbackQuery, state: FSMContext):
             f"💬 Поддержка: @AnisimovWork\n"
         )
         await callback.message.edit_text(text, reply_markup=build_admin_back(), parse_mode="HTML")
+
+    elif action == "categories":
+        cats_list = "\n".join([f"{num}. {name}" for num, name in GAME_CATEGORIES.items()])
+        text = f"🎮 <b>Категории ({len(GAME_CATEGORIES)})</b>\n\n{cats_list}"
+        buttons = [[InlineKeyboardButton(text=f"🗑 Удалить: {name}", callback_data=f"del_cat:{num}")] for num, name in GAME_CATEGORIES.items()]
+        buttons.append([InlineKeyboardButton(text="➕ Добавить категорию", callback_data="adm:add_category")])
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:back")])
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+    elif action == "add_category":
+        await state.set_state(AdminStates.waiting_new_category)
+        await callback.message.edit_text(
+            "🎮 Введите название новой категории:\n\n/cancel — отмена",
+            reply_markup=build_admin_back()
+        )
 
     await callback.answer()
 
@@ -1207,6 +1642,7 @@ async def admin_product_final(message: Message, state: FSMContext):
         "stock": int(data.get("product_stock", 0)),
         "description": message.text
     }
+    save_db()
     await message.answer(
         f"✅ Товар добавлен!\n\n"
         f"📦 <b>{data['product_name']}</b>\n"
@@ -1232,6 +1668,7 @@ def register_user(user):
             "username": user.username or "—",
             "join_time": time.strftime("%Y-%m-%d %H:%M")
         }
+        save_db()
 
 @dp.message(AdminStates.waiting_broadcast)
 async def admin_broadcast(message: Message, state: FSMContext):
@@ -1419,6 +1856,7 @@ async def cmd_id(message: Message):
         await message.reply(f"🆔 Твой ID: <code>{message.from_user.id}</code>", parse_mode="HTML")
 
 async def main():
+    load_db()
     print("🤖 Бот запущен...")
     from aiogram.types import BotCommand
     await bot.set_my_commands([
